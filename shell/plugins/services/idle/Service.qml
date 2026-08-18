@@ -24,6 +24,7 @@ Item {
   readonly property int lockDelaySeconds: Math.max(0, lockTimeoutSeconds - firstIdleTimeoutSeconds)
   readonly property bool idleEnabled: stayAwakeStateLoaded && !stayAwake
   readonly property string screensaverClass: "org.omarchy.screensaver"
+  readonly property bool screensaverVisible: screensaverWindowCount > 0
 
   property bool stayAwake: false
   property bool stayAwakeStateLoaded: false
@@ -77,6 +78,20 @@ Item {
     root.screensaverStartedThisCycle = false
     resetScreensaverWindows()
     runProcess(lockProcess, "lock", "omarchy-system-lock")
+  }
+
+  function dismissScreensaver(reason) {
+    logEvent("screensaver-dismiss", reason || "input")
+    // Signal the script, not its terminal: exit_screensaver stops ttfx before the
+    // terminal closes, and closing it first takes ttfx's pty with it. The terminal
+    // also ends in "omarchy-screensaver", hence the bash prefix.
+    runProcess(dismissProcess, "dismiss", "pkill -f 'bash .*bin/omarchy-screensaver$'")
+  }
+
+  function handleDismissMonitorChanged() {
+    var next = IdleModel.dismissStateAfter(dismissMonitor.settled, dismissMonitor.isIdle, root.screensaverVisible)
+    dismissMonitor.settled = next.settled
+    if (next.dismiss) dismissScreensaver("input-while-screensaver-visible")
   }
 
   function startIdleCycle() {
@@ -255,6 +270,20 @@ Item {
     onIsIdleChanged: root.handleIdleChanged()
   }
 
+  // Launching the screensaver counts as activity, so the main monitor sits at
+  // active for as long as it is displayed and never signals again. This one is
+  // armed only while the screensaver is up, and catches the input its read-loop
+  // cannot see: touch and pointer motion never reach the screensaver's stdin.
+  IdleMonitor {
+    id: dismissMonitor
+    property bool settled: false
+    enabled: root.screensaverVisible
+    timeout: 1
+    respectInhibitors: false
+    onEnabledChanged: settled = false
+    onIsIdleChanged: root.handleDismissMonitorChanged()
+  }
+
   Timer {
     id: screensaverTimer
     interval: root.screensaverDelaySeconds * 1000
@@ -292,6 +321,10 @@ Item {
   Process {
     id: lockProcess
     onExited: function(exitCode, exitStatus) { root.logEvent("process-exit", "lock exitCode=" + exitCode + " status=" + exitStatus) }
+  }
+  Process {
+    id: dismissProcess
+    onExited: function(exitCode, exitStatus) { root.logEvent("process-exit", "dismiss exitCode=" + exitCode + " status=" + exitStatus) }
   }
   Process {
     id: wakeProcess
